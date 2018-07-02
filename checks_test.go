@@ -1,34 +1,71 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
+	"os"
 	"testing"
 )
 
 func TestCheckRegex(t *testing.T) {
-	var results []string
+	var results []Leak
+	opts = &Options{
+		Concurrency:      10,
+		B64EntropyCutoff: 70,
+		HexEntropyCutoff: 40,
+		Entropy:          false,
+	}
+	repo := Repo{
+		url: "someurl",
+	}
+	commit := Commit{}
 	checks := map[string]int{
-		"github.com":                                                                                     0,
-		"github.com/user/":                                                                               0,
-		"github.com/user -- Sys":                                                                         0,
-		"github_api_client = \"sample key\"\naws=afewafewafewafewaf":                                     2,
-		"aws=\"afewafewafewafewaf\"":                                                                     1,
-		"aws\"afewafewafewafewaf\"":                                                                      0,
-		"heroku := \"afewafewafewafewaf\"":                                                               1,
-		"heroku_client_secret := \"afewafewafewafewaf\"":                                                 1,
-		"reddit_api_secreit = \"Fwe4fa431FgklreF\"":                                                      1,
-		"+ * [Github Help: Managing Deploy Keys](https://help.github.com/articles/managing-deploy-keys)": 0,
+		"aws=\"AKIALALEMEL33243OLIAE": 1,
+		"aws\"afewafewafewafewaf\"":   0,
 	}
 
 	for k, v := range checks {
-		results = checkRegex(k)
+		results = doChecks(k, commit, &repo)
 		if v != len(results) {
 			t.Errorf("regexCheck failed on string %s", k)
 		}
 	}
 }
 
+func TestExternalRegex(t *testing.T) {
+	opts, err := defaultOptions()
+	if err != nil {
+		t.Error()
+	}
+	file, err := os.Create("testregex.txt")
+	if err != nil {
+		t.Error()
+	}
+	defer file.Close()
+
+	w := bufio.NewWriter(file)
+	fmt.Fprintln(w, "AKIA[0-9A-Z]{16}")
+	w.Flush()
+
+	opts.RegexFile = "testregex.txt"
+	opts.loadExternalRegex()
+	leaks := doChecks("aws=\"AKIALALEMEL33243OLIAE",
+		Commit{}, &Repo{url: "someurl"})
+	if len(leaks) != 2 {
+		// leak from default regex, leak from external
+		t.Error()
+	}
+	os.Remove("testregex.txt")
+}
+
 func TestEntropy(t *testing.T) {
 	var enoughEntropy bool
+	opts := &Options{
+		Concurrency:      10,
+		B64EntropyCutoff: 70,
+		HexEntropyCutoff: 40,
+		Entropy:          false,
+	}
 	checks := map[string]bool{
 		"reddit_api_secret = settings./.http}":           false,
 		"heroku_client_secret = simple":                  false,
@@ -36,7 +73,7 @@ func TestEntropy(t *testing.T) {
 		"aws_secret= \"AKIAIMNOJVGFDXXFE4OA\"":           true,
 	}
 	for k, v := range checks {
-		enoughEntropy = checkShannonEntropy(k, 70, 40)
+		enoughEntropy = checkShannonEntropy(k, opts)
 		if v != enoughEntropy {
 			t.Errorf("checkEntropy failed for %s. Expected %t, got %t", k, v, enoughEntropy)
 		}

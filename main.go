@@ -1,91 +1,55 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	_ "io/ioutil"
-	"log"
-	"net/http"
 	"os"
 	"regexp"
-	"strings"
 )
 
+// ExitClean : no leaks have been found
+const ExitClean = 0
+
+// ExitFailure : gitleaks has encountered an error or SIGINT
+const ExitFailure = 1
+
+// ExitLeaks : leaks are present in scanned repos
+const ExitLeaks = 2
+
+// package globals
 var (
-	appRoot     string
-	regexes     map[string]*regexp.Regexp
-	assignRegex *regexp.Regexp
-	base64Chars string
-	hexChars    string
+	regexes       map[string]*regexp.Regexp
+	externalRegex []*regexp.Regexp
+	stopWords     []string
+	base64Chars   string
+	hexChars      string
+	assignRegex   *regexp.Regexp
+	fileDiffRegex *regexp.Regexp
+	opts          *Options
+	pwd           string
 )
 
 func init() {
-	var err error
-	appRoot, err = os.Getwd()
-	if err != nil {
-		log.Fatalf("Can't get working dir: %s", err)
-	}
-
-	// TODO update regex to look for things like:
-	// TODO ability to add/filter regex
-	// client("AKAI32fJ334...",
-	regexes = map[string]*regexp.Regexp{
-		"github":   regexp.MustCompile(`[g|G][i|I][t|T][h|H][u|U][b|B].*(=|:=|<-).*\w+.*`),
-		"aws":      regexp.MustCompile(`[a|A][w|W][s|S].*(=|:=|:|<-).*\w+.*`),
-		"heroku":   regexp.MustCompile(`[h|H][e|E][r|R][o|O][k|K][u|U].*(=|:=|<-).*\w+.*`),
-		"facebook": regexp.MustCompile(`[f|F][a|A][c|C][e|E][b|B][o|O][o|O][k|K].*(=|:=|<-).*\w+.*`),
-		"twitter":  regexp.MustCompile(`[t|T][w|W][i|I][t|T][t|T][e|E][r|R].*(=|:=|<-).*\w+.*`),
-		"reddit":   regexp.MustCompile(`[r|R][e|E][d|D][d|D][i|I][t|T].*(=|:=|<-).*\w+.*`),
-		"twilio":   regexp.MustCompile(`[t|T][w|W][i|I][l|L][i|I][o|O].*(=|:=|<-).*\w+.*`),
-	}
-	assignRegex = regexp.MustCompile(`(=|:|:=|<-)`)
 	base64Chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
 	hexChars = "1234567890abcdefABCDEF"
+	stopWords = []string{"setting", "info", "env", "environment"}
+	fileDiffRegex = regexp.MustCompile("diff --git a.+b/")
+	assignRegex = regexp.MustCompile(`(=|:|:=|<-)`)
+	regexes = map[string]*regexp.Regexp{
+		"PKCS8":    regexp.MustCompile("-----BEGIN PRIVATE KEY-----"),
+		"RSA":      regexp.MustCompile("-----BEGIN RSA PRIVATE KEY-----"),
+		"DSA":      regexp.MustCompile("-----BEGIN DSA PRIVATE KEY-----"),
+		"SSH":      regexp.MustCompile("-----BEGIN OPENSSH PRIVATE KEY-----"),
+		"Facebook": regexp.MustCompile("(?i)facebook.*['\"][0-9a-f]{32}['\"]"),
+		"Twitter":  regexp.MustCompile("(?i)twitter.*['\"][0-9a-zA-Z]{35,44}['\"]"),
+		"Github":   regexp.MustCompile("(?i)github.*['\"][0-9a-zA-Z]{35,40}['\"]"),
+		"AWS":      regexp.MustCompile("AKIA[0-9A-Z]{16}"),
+		"Reddit":   regexp.MustCompile("(?i)reddit.*['\"][0-9a-zA-Z]{14}['\"]"),
+		"Heroku":   regexp.MustCompile("(?i)heroku.*[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}"),
+	}
 }
 
 func main() {
 	args := os.Args[1:]
-	opts := parseOptions(args)
-	if opts.RepoURL != "" {
-		start(opts)
-	} else if opts.UserURL != "" || opts.OrgURL != "" {
-		repoList := repoScan(opts)
-		for _, repo := range repoList {
-			opts.RepoURL = repo.RepoURL
-			start(opts)
-		}
-	}
-}
-
-// RepoElem used for parsing json from github api
-type RepoElem struct {
-	RepoURL string `json:"html_url"`
-}
-
-// repoScan attempts to parse all repo urls from an organization or user
-func repoScan(opts *Options) []RepoElem {
-	var (
-		targetURL  string
-		target     string
-		targetType string
-		repoList   []RepoElem
-	)
-
-	if opts.UserURL != "" {
-		targetURL = opts.UserURL
-		targetType = "users"
-	} else {
-		targetURL = opts.OrgURL
-		targetType = "orgs"
-	}
-	splitTargetURL := strings.Split(targetURL, "/")
-	target = splitTargetURL[len(splitTargetURL)-1]
-
-	resp, err := http.Get(fmt.Sprintf("https://api.github.com/%s/%s/repos", targetType, target))
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer resp.Body.Close()
-	json.NewDecoder(resp.Body).Decode(&repoList)
-	return repoList
+	opts = newOpts(args)
+	owner := newOwner()
+	os.Exit(owner.auditRepos())
 }
